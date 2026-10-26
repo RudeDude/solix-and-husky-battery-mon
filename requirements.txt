@@ -1,0 +1,10 @@
+bleak>=0.22
+# 3.9.0 sends a canned confirmation this F3800 ignores. 4.0.0b2 computes it.
+SolixBLE @ git+https://github.com/flip-dots/SolixBLE.git@1659309002a85a76405841323daf274a5a4c20ce
+# Cloud MQTT. The F3800 publishes status only while it is on Wi-Fi.
+# The library wheel does not declare these, so they are listed here.
+aiohttp>=3.9
+aiofiles>=23
+paho-mqtt>=2.1
+anker-solix-api @ git+https://github.com/thomluther/anker-solix-api.git@v3.9.0
+python-dotenv>=1.0
