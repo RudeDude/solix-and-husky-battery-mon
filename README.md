@@ -8,9 +8,25 @@ Read-only Python clients for two batteries.
   [Sources](#sources-examined-for-the-f3800).
 - [Both batteries](#collect-both) sampled together into one NDJSON file.
 
+The Husky is the external pack on the F3800.
+[How the Husky is attached](#how-the-husky-is-attached).
+
 Names, MAC addresses, the F3800 LAN address, and the F3800 serial are read
 from `.env`. Copy `.env.example` to `.env` and fill in the placeholders.
 `ANKERPASSWORD` stays in that file and is not printed.
+
+# How the Husky is attached
+
+The Husky is the external pack on the F3800 expansion battery port. With the
+station powered on, that port is the internal 51.2 V bus, and other owners
+parallel a 48 V LiFePO4 pack there so the station's inverter and chargers
+serve both. Anker's BP3800 uses the same port and a center data pin so the
+station can count the extra pack. This link is
+[NoiseLab47's printed plug](https://www.thingiverse.com/thing:7003775)
+on the power pins, with that data pin left unused. The 16-cell Husky shares
+the station's bus, and the percentage the F3800 reports is still its own
+pack. Some owners feed a 48 V pack into an XT60 solar input instead. That
+path only charges the station.
 
 # Husky 2 Bluetooth monitor
 
