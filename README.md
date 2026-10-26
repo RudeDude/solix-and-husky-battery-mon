@@ -35,7 +35,7 @@ Read-only Python client for the Bluetooth radio in a BigBattery 48 V Husky 2
 `HUSKY_BT_ADDRESS`. It prints pack voltage, current, state of charge,
 temperatures, and each cell voltage.
 
-The phone app for this battery is Battery Monitor BL by Zetarapower. This
+The phone app for this battery is [Battery Monitor BL](https://play.google.com/store/apps/details?id=com.ztpower.monitor.bl) by Zetarapower ([App Store](https://apps.apple.com/us/app/batterymonitorbl/id1585654219)). This
 program does not change module id, CAN protocol, RS485 protocol, or any
 protection setting.
 
