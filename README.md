@@ -297,3 +297,7 @@ Local Modbus, checked and not used as a data source:
 - [moag1000 `devices/modbus.md`](https://github.com/moag1000/anker-solix-api-exploration/blob/main/devices/modbus.md)
   for how the app enables third-party Modbus. No F3800 register map is
   published there.
+
+# License
+
+MIT. See [LICENSE](LICENSE).
