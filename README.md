@@ -7,6 +7,7 @@ Read-only Python clients for two batteries.
 - [Anker SOLIX F3800](#anker-solix-f3800) over Bluetooth while the IoT icon is showing, or over the Anker cloud once the station is on Wi-Fi. The LAN address is probed and is not a data source.
   [Sources](#sources-examined-for-the-f3800).
 - [Both batteries](#collect-both) sampled together into one NDJSON file.
+- [Capacity and runtime](#capacity-and-runtime) from those logs.
 
 The Husky is the external pack on the F3800.
 [How the Husky is attached](#how-the-husky-is-attached).
@@ -242,6 +243,30 @@ before the F3800 scan. That scan can still disturb the Husky session.
 
 `status.sh` reads the newest Husky line and the newest Solix line that
 contain a reading, including from the previous day when today has none yet.
+
+# Capacity and runtime
+
+`capacity` reads every `data/**/readings.ndjson` file. The Solix percentage
+is its own 75 Ah / 3840 Wh. The Husky's 100 Ah / 5120 Wh is on the same bus
+and is absent from that percentage. The bus voltage in the log is the Husky
+reading. The Solix reports no pack voltage.
+
+The Husky 2 operating window is 48–57 V, with a suggested low cutoff of
+50.8 V and a BMS cutoff of 42–47 V. Its charge window is 55.6–57 V. The
+F3800 publishes 51.2 V and 75 Ah and does not publish a pack cutoff, so
+50.8 V is the shared stop on this pair. LiFePO4 voltage barely moves from
+about 20% to 90%. A drop while both counters hold still, just after
+charging, is surface charge leaving. A continuous stretch that moves a
+counter by 10 points replaces that pack's nameplate. A gap is not filled in.
+
+Runtime is the remaining DC watt-hours, times a 90% inverter, divided by an
+AC load. The station's own hours-remaining figure is printed beside it and
+does not include the Husky.
+
+```bash
+.venv/bin/python -m capacity
+.venv/bin/python -m capacity --load 500
+```
 
 ## Sources examined for the F3800
 
