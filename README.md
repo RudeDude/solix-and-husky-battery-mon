@@ -266,12 +266,18 @@ calibrated. Remaining Husky watt-hours are amp-hours counted from the last
 rested full cell, when the Solix is near 100% and the lowest cell is at or
 above 3.30 V. A gap is not filled in.
 
-Runtime is the remaining DC watt-hours, times a 90% inverter, divided by an
-AC load. The station's own hours-remaining figure is printed beside it and
-does not include the Husky.
+The default report is a short table: total and remaining capacity for the
+Solix, the Husky, and the shared pack, then example AC loads. Shared runtime
+has a full column for the 8960 Wh pack and a remaining column for the
+watt-hours still in the packs. Each figure is DC watt-hours times a 90%
+inverter, divided by the load. `-v` adds the log notes (gaps, bus voltage,
+the Husky percentage, and how the watt-hours were counted). With `-v`, the
+station's own hours-remaining figure is printed with the notes. That figure
+is the Solix pack.
 
 ```bash
 .venv/bin/python -m capacity
+.venv/bin/python -m capacity -v
 .venv/bin/python -m capacity --load 500
 ```
 

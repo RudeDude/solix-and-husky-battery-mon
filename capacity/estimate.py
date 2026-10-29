@@ -315,16 +315,22 @@ def analyze(
     )
 
 
-def render(analysis: Analysis) -> str:
-    """Plain-text report."""
+def render(analysis: Analysis, *, verbose: bool = False) -> str:
+    """Plain-text report.
+
+    The default is total and remaining capacity, then shared-pack runtime.
+    ``verbose`` adds the log notes.
+    """
 
     lines: list[str] = []
-    _logs(lines, analysis)
-    _nameplate(lines)
-    _measured(lines, analysis)
-    _voltage(lines, analysis)
-    _write_remaining(lines, analysis)
-    _runtime(lines, analysis)
+    _capacity_table(lines, analysis)
+    _runtime(lines, analysis, verbose=verbose)
+    if verbose:
+        _logs(lines, analysis)
+        _nameplate(lines)
+        _write_remaining(lines, analysis)
+        _measured(lines, analysis)
+        _voltage(lines, analysis)
     return "\n".join(lines) + "\n"
 
 
@@ -338,20 +344,21 @@ def to_json(analysis: Analysis) -> dict[str, object]:
         "solix_samples": analysis.solix_samples,
         "start": None if analysis.start is None else analysis.start.isoformat(),
         "end": None if analysis.end is None else analysis.end.isoformat(),
-        "nameplate_ah": {"solix": SOLIX_AH, "husky": HUSKY_AH},
+        "nameplate_ah": {"solix": SOLIX_AH, "husky": HUSKY_AH, "total": SOLIX_AH + HUSKY_AH},
+        "shared_pack_wh": {
+            "solix": SOLIX_WH,
+            "husky": HUSKY_WH,
+            "total": SOLIX_WH + HUSKY_WH,
+        },
         "measured_ah": {"solix": analysis.solix_ah, "husky": None},
         "husky_count": _count_json(analysis.husky_count),
         "voltage_min": analysis.voltage_min,
         "voltage_max": analysis.voltage_max,
-        "remaining_wh": None
-        if remaining is None
-        else {
-            "solix": _round(remaining.solix_wh, 1),
-            "husky": _round(remaining.husky_wh, 1),
-        },
+        "remaining_wh": _remaining_json(remaining),
         "runtimes": [
             {
                 "load_w": row.load_w,
+                "full_h": _round(_hours(HUSKY_WH, SOLIX_WH, row.load_w), 2),
                 "combined_h": _round(row.combined_h, 2),
                 "solix_h": _round(row.solix_h, 2),
                 "logged": row.logged,
@@ -820,6 +827,75 @@ def _hours(husky_wh: float | None, solix_wh: float | None, load_w: float) -> flo
     return total * INVERTER_EFF / load_w
 
 
+def _capacity_table(lines: list[str], analysis: Analysis) -> None:
+    """Total and remaining amp-hours and watt-hours for each pack."""
+
+    remaining = analysis.remaining
+    lines.append("Capacity")
+    lines.append(f"  {'':6} {'total':^19}   {'remaining':^27}")
+    lines.append(_capacity_row("Solix", SOLIX_AH, SOLIX_WH, *_pack_figures(remaining, "solix")))
+    lines.append(_capacity_row("Husky", HUSKY_AH, HUSKY_WH, *_pack_figures(remaining, "husky")))
+    lines.append(
+        _capacity_row(
+            "Shared",
+            SOLIX_AH + HUSKY_AH,
+            SOLIX_WH + HUSKY_WH,
+            *_shared_figures(remaining),
+        )
+    )
+
+
+def _pack_figures(
+    remaining: Remaining | None,
+    pack: str,
+) -> tuple[float | None, float | None, float | None]:
+    """Remaining amp-hours, watt-hours, and percent for one pack."""
+
+    if remaining is None:
+        return None, None, None
+    if pack == "husky":
+        if remaining.husky_wh is None or remaining.husky_soc is None:
+            return None, None, None
+        amp_hours = HUSKY_AH * remaining.husky_soc / 100.0
+        return amp_hours, remaining.husky_wh, remaining.husky_soc
+    if remaining.solix_wh is None or remaining.solix_soc is None:
+        return None, None, None
+    amp_hours = remaining.solix_ah * remaining.solix_soc / 100.0
+    return amp_hours, remaining.solix_wh, remaining.solix_soc
+
+
+def _shared_figures(
+    remaining: Remaining | None,
+) -> tuple[float | None, float | None, float | None]:
+    """Remaining amp-hours, watt-hours, and percent of the full shared pack."""
+
+    if remaining is None:
+        return None, None, None
+    parts = _still_parts(remaining)
+    if len(parts) < 2:
+        return None, None, None
+    watt_hours = float(sum(item[1] for item in parts))
+    amp_hours = sum(item[2] for item in parts)
+    return amp_hours, watt_hours, watt_hours / (SOLIX_WH + HUSKY_WH) * 100.0
+
+
+def _capacity_row(
+    name: str,
+    total_ah: float,
+    total_wh: float,
+    rem_ah: float | None,
+    rem_wh: float | None,
+    rem_pct: float | None,
+) -> str:
+    rem_ah_s = "—" if rem_ah is None else f"{rem_ah:.1f} Ah"
+    rem_wh_s = "—" if rem_wh is None else f"{_wh(rem_wh)} Wh"
+    pct_s = "—" if rem_pct is None else _pct(rem_pct)
+    return (
+        f"  {name:<6} {total_ah:6.0f} Ah {total_wh:6.0f} Wh"
+        f"   {rem_ah_s:>10} {rem_wh_s:>9} {pct_s:>6}"
+    )
+
+
 def _logs(lines: list[str], analysis: Analysis) -> None:
     lines.append("Logs")
     if analysis.start is None or analysis.end is None:
@@ -835,7 +911,8 @@ def _logs(lines: list[str], analysis: Analysis) -> None:
 
 def _nameplate(lines: list[str]) -> None:
     lines.append("")
-    lines.append("Nameplate, 16S LiFePO4")
+    lines.append("Shared pack capacity, 16S LiFePO4")
+    lines.append("  Both packs full.")
     lines.append(
         f"  Solix F3800   {SOLIX_AH:.0f} Ah   {SOLIX_WH:.0f} Wh   {NOMINAL_V:.1f} V"
         "   pack cutoff not published"
@@ -847,7 +924,7 @@ def _nameplate(lines: list[str]) -> None:
         f" BMS cutoff {HUSKY_BMS_CUTOFF_MIN_V:.0f}–{HUSKY_BMS_CUTOFF_MAX_V:.0f} V"
     )
     lines.append(
-        f"  Combined     {SOLIX_AH + HUSKY_AH:.0f} Ah   {SOLIX_WH + HUSKY_WH:.0f} Wh"
+        f"  Total shared {SOLIX_AH + HUSKY_AH:.0f} Ah   {SOLIX_WH + HUSKY_WH:.0f} Wh"
     )
 
 
@@ -981,21 +1058,26 @@ def _voltage(lines: list[str], analysis: Analysis) -> None:
 
 def _write_remaining(lines: list[str], analysis: Analysis) -> None:
     lines.append("")
-    lines.append("Remaining")
+    lines.append("Remaining now")
     remaining = analysis.remaining
     if remaining is None or (remaining.husky_wh is None and remaining.solix_wh is None):
         lines.append("  no state of charge in the log")
         return
     _write_husky(lines, remaining, analysis.husky_count)
-    _pack_remaining(lines, "Solix", remaining.solix_wh, remaining.solix_soc, remaining.solix_ah, remaining.solix_from_log, SOLIX_AH)
-    if remaining.husky_wh is not None and remaining.solix_wh is not None:
-        lines.append(f"  Combined {remaining.husky_wh + remaining.solix_wh:.0f} Wh.")
-    if remaining.solix_wh is not None:
-        lines.append(f"  Solix alone is {remaining.solix_wh:.0f} Wh.")
+    _pack_remaining(
+        lines,
+        "Solix",
+        remaining.solix_wh,
+        remaining.solix_soc,
+        remaining.solix_ah,
+        remaining.solix_from_log,
+        SOLIX_AH,
+    )
+    _write_still(lines, remaining)
     latest = analysis.latest
     if latest is not None and latest.solix_hours is not None:
         lines.append(
-            f"  The station last reported {latest.solix_hours:.1f} h remaining, from its own pack."
+            f"  The station last reported {latest.solix_hours:.1f} h remaining, for the Solix pack."
         )
 
 
@@ -1025,8 +1107,9 @@ def _write_husky(lines: list[str], remaining: Remaining, count: HuskyCount | Non
     else:
         moved = f"{-amp_hours:.1f} Ah have gone in since then."
     lines.append(
-        f"  Husky {_pct(count.soc)} of the {HUSKY_AH:.0f} Ah nameplate"
-        f" = {remaining.husky_wh:.0f} Wh, counted from Solix {_pct(count.anchor_soc)}{when}{cell}."
+        f"  Husky {_pct(count.soc)} of its {HUSKY_AH:.0f} Ah,"
+        f" {_wh(remaining.husky_wh)} Wh of its {HUSKY_WH:.0f} Wh,"
+        f" counted from Solix {_pct(count.anchor_soc)}{when}{cell}."
         f" {moved}"
     )
     _register_note(lines, count)
@@ -1056,22 +1139,86 @@ def _pack_remaining(
     if watt_hours is None or soc is None:
         lines.append(f"  {name} has no state of charge.")
         return
+    pack_wh = amp_hours * NOMINAL_V
     if from_log:
-        detail = f"{amp_hours:.0f} Ah from the log (nameplate {nameplate:.0f} Ah)"
-    else:
-        detail = f"the {amp_hours:.0f} Ah nameplate"
-    lines.append(f"  {name} {_pct(soc)} of {detail} = {watt_hours:.0f} Wh.")
-
-
-def _runtime(lines: list[str], analysis: Analysis) -> None:
-    lines.append("")
+        lines.append(
+            f"  {name} {_pct(soc)} of {amp_hours:.0f} Ah from the log"
+            f" (nameplate {nameplate:.0f} Ah) = {_wh(watt_hours)} Wh."
+        )
+        return
     lines.append(
-        "Runtime at an AC load. DC watt-hours times a 90% inverter, divided by the load."
+        f"  {name} {_pct(soc)} of its {amp_hours:.0f} Ah,"
+        f" {_wh(watt_hours)} Wh of its {_wh(pack_wh)} Wh."
     )
+
+
+def _still_parts(remaining: Remaining) -> list[tuple[str, int, float]]:
+    """Rounded watt-hours and amp-hours for each pack that has a reading."""
+
+    parts: list[tuple[str, int, float]] = []
+    if remaining.husky_wh is not None and remaining.husky_soc is not None:
+        parts.append(("Husky", _wh(remaining.husky_wh), HUSKY_AH * remaining.husky_soc / 100.0))
+    if remaining.solix_wh is not None and remaining.solix_soc is not None:
+        parts.append(
+            ("Solix", _wh(remaining.solix_wh), remaining.solix_ah * remaining.solix_soc / 100.0)
+        )
+    return parts
+
+
+def _write_still(lines: list[str], remaining: Remaining) -> None:
+    """Watt-hours still in the packs, set beside the full shared pack."""
+
+    parts = _still_parts(remaining)
+    if not parts:
+        return
+    watt_hours = sum(item[1] for item in parts)
+    amp_hours = sum(item[2] for item in parts)
+    shared_wh = SOLIX_WH + HUSKY_WH
+    shared_ah = SOLIX_AH + HUSKY_AH
+    if len(parts) == 2:
+        fraction = watt_hours / shared_wh * 100.0
+        lines.append(
+            f"  Still in the packs: {watt_hours:.0f} Wh,"
+            f" {_pct(fraction)} of the {shared_wh:.0f} Wh shared pack"
+            f" ({amp_hours:.1f} Ah of {shared_ah:.0f} Ah)."
+        )
+        return
+    name = parts[0][0]
+    lines.append(
+        f"  {watt_hours:.0f} Wh counted so far, in the {name}."
+        f" Shared pack with both packs full: {shared_ah:.0f} Ah, {shared_wh:.0f} Wh."
+    )
+
+
+def _remaining_json(remaining: Remaining | None) -> dict[str, object] | None:
+    if remaining is None:
+        return None
+    parts = _still_parts(remaining)
+    total = sum(item[1] for item in parts) if parts else None
+    fraction = None
+    if len(parts) == 2 and total is not None:
+        fraction = _round(total / (SOLIX_WH + HUSKY_WH), 3)
+    return {
+        "solix": _round(remaining.solix_wh, 1),
+        "husky": _round(remaining.husky_wh, 1),
+        "total": None if total is None else float(total),
+        "fraction_of_shared": fraction,
+    }
+
+
+def _runtime(lines: list[str], analysis: Analysis, *, verbose: bool) -> None:
+    lines.append("")
+    if verbose:
+        lines.append("Runtime of the watt-hours still in the packs")
+        lines.append("  DC watt-hours times a 90% inverter, divided by the AC load.")
+    else:
+        lines.append("Shared runtime")
+        _shared_runtime(lines, analysis)
+        return
     if not analysis.runtimes:
         lines.append("  no remaining energy")
         return
-    lines.append(f"  {'load':>8}  {'combined':>10}  {'Solix alone':>12}")
+    lines.append(f"  {'load':>8}  {'both packs':>10}  {'Solix pack':>12}")
     for row in analysis.runtimes:
         mark = "  logged" if row.logged else ""
         lines.append(
@@ -1079,6 +1226,19 @@ def _runtime(lines: list[str], analysis: Analysis) -> None:
         )
     if analysis.logged_load_w is None:
         lines.append("  No stretch in the log has the batteries carrying the AC load.")
+
+
+def _shared_runtime(lines: list[str], analysis: Analysis) -> None:
+    """Example loads only. Full pack hours beside hours at the watt-hours still in the packs."""
+
+    rows = [row for row in analysis.runtimes if not row.logged]
+    if not rows:
+        lines.append("  no combined estimate")
+        return
+    lines.append(f"  {'':>8}  {'full':>8}  {'remaining':>10}")
+    for row in rows:
+        full_h = _hours(HUSKY_WH, SOLIX_WH, row.load_w)
+        lines.append(f"  {_watts(row.load_w):>8}  {_hour(full_h):>8}  {_hour(row.combined_h):>10}")
 
 
 def _when(moment: datetime) -> str:
@@ -1096,6 +1256,10 @@ def _span(seconds: float) -> str:
     if minutes < 90:
         return f"{minutes} min"
     return f"{seconds / 3600.0:.1f} h"
+
+
+def _wh(value: float) -> int:
+    return int(round(value))
 
 
 def _watts(value: float) -> str:

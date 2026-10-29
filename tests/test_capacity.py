@@ -20,6 +20,7 @@ from capacity.estimate import (
     battery_bus_watts,
     load_logs,
     render,
+    to_json,
 )
 
 
@@ -103,8 +104,16 @@ class MeasureTests(unittest.TestCase):
         self.assertAlmostEqual(report.remaining.solix_wh or 0.0, solix_wh, delta=5.0)
         self.assertFalse(report.remaining.solix_from_log)
         text = render(report)
-        self.assertIn("would be a 40 Ah pack", text)
-        self.assertIn("75 Ah nameplate", text)
+        self.assertIn("45.0 Ah", text)
+        self.assertIn("2304 Wh", text)
+        self.assertIn("80.6 h", text)
+        self.assertNotIn("logged", text)
+        self.assertNotIn("would be a 40 Ah pack", text)
+        self.assertNotIn("counted so far", text)
+        notes = render(report, verbose=True)
+        self.assertIn("would be a 40 Ah pack", notes)
+        self.assertIn("75 Ah nameplate", notes)
+        self.assertIn("counted so far, in the Solix", notes)
 
     def test_a_gap_does_not_become_amp_hours(self) -> None:
         early = _at(0, voltage_v=53.0, current_a=-10.0, husky_soc=80.0, solix_soc=80.0, ac_in_w=0.0, ac_out_w=500.0)
@@ -114,9 +123,12 @@ class MeasureTests(unittest.TestCase):
         self.assertIsNone(report.solix_ah)
         self.assertIsNotNone(report.largest_gap)
         text = render(report)
-        self.assertIn("75 Ah nameplate stands", text)
-        self.assertIn("not a capacity measurement", text)
-        self.assertIn("gap", text)
+        self.assertNotIn("gap", text)
+        self.assertNotIn("nameplate stands", text)
+        notes = render(report, verbose=True)
+        self.assertIn("75 Ah nameplate stands", notes)
+        self.assertIn("not a capacity measurement", notes)
+        self.assertIn("gap", notes)
         self.assertIsNotNone(report.remaining)
         assert report.remaining is not None
         self.assertIsNone(report.remaining.husky_wh)
@@ -145,10 +157,13 @@ class MeasureTests(unittest.TestCase):
         self.assertIsNone(report.husky_ah)
         self.assertIsNotNone(report.relaxation)
         text = render(report)
-        self.assertIn("surface charge", text)
-        self.assertIn("50.8 V", text)
-        self.assertIn("finishing the charge", text)
-        self.assertIn("No stretch in the log has the batteries carrying the AC load.", text)
+        self.assertNotIn("surface charge", text)
+        self.assertNotIn("No stretch in the log", text)
+        notes = render(report, verbose=True)
+        self.assertIn("surface charge", notes)
+        self.assertIn("50.8 V", notes)
+        self.assertIn("finishing the charge", notes)
+        self.assertIn("No stretch in the log has the batteries carrying the AC load.", notes)
 
     def test_husky_remaining_is_counted_from_a_rested_full_cell(self) -> None:
         # One rested minute, then 120 minutes at 10 A. Left Riemann skips the rest minute.
@@ -194,8 +209,29 @@ class MeasureTests(unittest.TestCase):
         husky_wh = 100.0 * NOMINAL_V * 0.80
         self.assertAlmostEqual(report.remaining.husky_wh or 0.0, husky_wh, delta=5.0)
         text = render(report)
-        self.assertIn("not used", text)
-        self.assertIn("200 Ah", text)
+        self.assertIn("80.0 Ah", text)
+        self.assertIn("4096 Wh", text)
+        self.assertIn("8960 Wh", text)
+        self.assertIn("Shared runtime", text)
+        self.assertIn("16.1 h", text)
+        self.assertIn("14.3 h", text)
+        self.assertNotIn("logged", text)
+        self.assertNotIn("not used", text)
+        self.assertNotIn("200 Ah", text)
+        self.assertNotIn("Combined", text)
+        notes = render(report, verbose=True)
+        self.assertIn("not used", notes)
+        self.assertIn("200 Ah", notes)
+        self.assertIn("Total shared 175 Ah   8960 Wh", notes)
+        payload = to_json(report)
+        shared = payload["shared_pack_wh"]
+        assert isinstance(shared, dict)
+        self.assertEqual(shared["total"], 8960.0)
+        remaining = payload["remaining_wh"]
+        assert isinstance(remaining, dict)
+        self.assertIsNotNone(remaining["total"])
+        self.assertIsNotNone(remaining["fraction_of_shared"])
+        self.assertLess(float(remaining["fraction_of_shared"]), 1.0)
 
     def test_a_cell_at_the_stop_zeros_husky_watt_hours(self) -> None:
         samples = [
@@ -230,8 +266,12 @@ class MeasureTests(unittest.TestCase):
         assert report.remaining is not None
         self.assertEqual(report.remaining.husky_wh, 0.0)
         text = render(report)
-        self.assertIn("at or below", text)
-        self.assertIn("3.175", text)
+        self.assertIn("0 Wh", text)
+        self.assertNotIn("at or below", text)
+        self.assertNotIn("3.175", text)
+        notes = render(report, verbose=True)
+        self.assertIn("at or below", notes)
+        self.assertIn("3.175", notes)
 
 
 class LogTests(unittest.TestCase):
@@ -280,8 +320,21 @@ class LogTests(unittest.TestCase):
             buffer = io.StringIO()
             with redirect_stdout(buffer):
                 code = main(["--data-dir", directory, "--load", "420"])
+            verbose = io.StringIO()
+            with redirect_stdout(verbose):
+                verbose_code = main(["--data-dir", directory, "--load", "420", "-v"])
         self.assertEqual(code, 0)
         text = buffer.getvalue()
         self.assertIn("420 W", text)
-        self.assertIn("Combined", text)
-        self.assertIn("not used", text)
+        self.assertIn("8960 Wh", text)
+        self.assertIn("Shared runtime", text)
+        self.assertIn("full", text)
+        self.assertNotIn("logged", text)
+        self.assertNotIn("not used", text)
+        self.assertNotIn("Measured", text)
+        self.assertNotIn("Combined", text)
+        self.assertEqual(verbose_code, 0)
+        notes = verbose.getvalue()
+        self.assertIn("420 W", notes)
+        self.assertIn("not used", notes)
+        self.assertIn("Bus voltage", notes)

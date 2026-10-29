@@ -1,6 +1,7 @@
 """Report capacity and runtime from the collector logs.
 
     python -m capacity
+    python -m capacity -v
     python -m capacity --load 500
     python -m capacity --json
 """
@@ -20,8 +21,8 @@ def _parser() -> argparse.ArgumentParser:
         prog="capacity",
         description=(
             "Read data/**/readings.ndjson and estimate combined capacity and "
-            "runtime. The Solix percentage is its own pack. Husky watt-hours "
-            "are counted from a rested full cell. The Husky percentage is not used."
+            "runtime. The default print is total and remaining capacity, plus "
+            "shared-pack runtime. -v adds the log notes."
         ),
     )
     parser.add_argument(
@@ -43,6 +44,12 @@ def _parser() -> argparse.ArgumentParser:
         help="percentage points a continuous Solix stretch must move before inferred amp-hours are reported",
     )
     parser.add_argument("--json", action="store_true", help="print the numbers as JSON")
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="also print log notes: gaps, bus voltage, and how the watt-hours were counted",
+    )
     return parser
 
 
@@ -60,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps(to_json(report), indent=2))
     else:
-        print(render(report), end="")
+        print(render(report, verbose=args.verbose), end="")
     return 0
 
 
