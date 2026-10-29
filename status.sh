@@ -1,12 +1,30 @@
 #!/usr/bin/env bash
 # Print the newest Husky reading, the newest Solix F3800 reading, and the
 # remaining capacity estimate from capacity-estimate.env when that file exists.
-# Usage: ./status.sh [data-dir] [estimate-file]
+# Usage: ./status.sh [-v] [data-dir] [estimate-file]
+#
+# -v also prints the as-of times, zero-watt lines, and the usual
+# inactive, not_connected, and AC-output states.
 
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")" && pwd)
-data=${1:-"$root/data"}
+verbose=false
+positionals=()
+for arg in "$@"; do
+  case $arg in
+    -v|--verbose) verbose=true ;;
+    *) positionals+=("$arg") ;;
+  esac
+done
+data=$root/data
+estimate=$root/capacity-estimate.env
+if ((${#positionals[@]} >= 1)); then
+  data=${positionals[0]}
+fi
+if ((${#positionals[@]} >= 2)); then
+  estimate=${positionals[1]}
+fi
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required" >&2
@@ -45,11 +63,11 @@ latest() {
 }
 
 print_husky() {
-  jq -r '
+  jq -r --argjson verbose "$verbose" '
     def num(v; digits):
       if v == null then empty else (v | tonumber | . * pow(10; digits) | round / pow(10; digits) | tostring) end;
     "Husky 2   \(.name // "BB-GOLF-BT1128")",
-    "  as of            \(.time)",
+    (if $verbose then "  as of            \(.time)" else empty end),
     (if .soc_percent != null then "  state of charge  \(num(.soc_percent; 1))%" else empty end),
     (if .voltage_v != null then "  voltage          \(num(.voltage_v; 2)) V" else empty end),
     (if .current_a != null then
@@ -67,13 +85,19 @@ print_husky() {
 }
 
 print_solix() {
-  jq -r '
+  jq -r --argjson verbose "$verbose" '
     def num(v; digits):
       if v == null then empty else (v | tonumber | . * pow(10; digits) | round / pow(10; digits) | tostring) end;
     def watts(key; title):
-      if has(key) then "  \(title) \(num(.[key]; 0)) W" else empty end;
+      if has(key) and .[key] != null and ($verbose or ((.[key] | tonumber | round) != 0)) then
+        "  \(title) \(num(.[key]; 0)) W"
+      else empty end;
+    def state(title; value; usual):
+      if value == null then empty
+      elif $verbose or value != usual then "  \(title)\(value)"
+      else empty end;
     "Solix F3800   \(.name // "F3800")",
-    "  as of            \(.time)",
+    (if $verbose then "  as of            \(.time)" else empty end),
     (if .soc_percent != null then "  state of charge  \(num(.soc_percent; 1))%" else empty end),
     (if .temperature_c != null then "  temperature      \(num(.temperature_c; 1)) C" else empty end),
     watts("ac_power_in_w"; "AC in           "),
@@ -90,14 +114,12 @@ print_solix() {
       | [$ports[] | select($row[.] != null and $row[.] != 0) | "\(.) \($row[.] | tonumber | round) W"] as $live
       | if $live | length > 0 then "  usb              \($live | join(", "))" else empty end
     ),
-    (if .charging != null then "  charging         \(.charging)" else empty end),
-    (if .ac_output != null then "  AC output        \(.ac_output)" else empty end),
-    (if .dc_output != null then "  DC output        \(.dc_output)" else empty end),
+    state("charging         "; .charging; "inactive"),
+    state("AC output        "; .ac_output; "output"),
+    state("DC output        "; .dc_output; "not_connected"),
     (if .hours_remaining != null then "  hours remaining  \(num(.hours_remaining; 1)) h" else empty end)
   '
 }
-
-estimate=${2:-"$root/capacity-estimate.env"}
 
 print_capacity() {
   local label pct wh value i w_name h_name w h

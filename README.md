@@ -239,10 +239,13 @@ before the F3800 scan. That scan can still disturb the Husky session.
 .venv/bin/python -m collector --interval 60
 .venv/bin/python -m collector --interval 300
 ./status.sh
+./status.sh -v
 ```
 
 `status.sh` reads the newest Husky line and the newest Solix line that
 contain a reading, including from the previous day when today has none yet.
+The default print leaves out the as-of times, zero-watt lines, and the
+usual inactive, not-connected, and AC-output states. `-v` prints those.
 When `capacity-estimate.env` is present, it also prints the shared remaining
 capacity and the remaining runtime from that file.
 

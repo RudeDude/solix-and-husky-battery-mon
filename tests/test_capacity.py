@@ -418,7 +418,7 @@ class LogTests(unittest.TestCase):
                 text=True,
             )
         self.assertEqual(shown.returncode, 0, shown.stderr)
-        self.assertIn("shared remaining 42.7%   3830 Wh", shown.stdout)
+        self.assertIn("remaining        42.7%   3830 Wh", shown.stdout)
         self.assertNotIn("Solix remaining", shown.stdout)
         self.assertNotIn("Husky remaining", shown.stdout)
         self.assertNotIn("logs through", shown.stdout)
@@ -428,3 +428,54 @@ class LogTests(unittest.TestCase):
         self.assertEqual(missing.returncode, 0, missing.stderr)
         self.assertIn("no estimate yet", missing.stdout)
         self.assertIn("Solix F3800", missing.stdout)
+        self.assertNotIn("as of", shown.stdout)
+
+    def test_status_hides_quiet_lines_unless_verbose(self) -> None:
+        script = Path(__file__).resolve().parents[1] / "status.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "2026" / "10" / "25"
+            root.mkdir(parents=True)
+            solix = {
+                "time": "2026-10-29T13:00:00-04:00",
+                "device": "f3800",
+                "name": "Anker SOLIX F3800",
+                "soc_percent": 3,
+                "ac_power_in_w": 0,
+                "ac_power_out_w": 246,
+                "charge_power_w": 0,
+                "solar_power_w": 0,
+                "discharge_power_w": 2,
+                "charging": "inactive",
+                "ac_output": "output",
+                "dc_output": "not_connected",
+                "hours_remaining": 0.9,
+            }
+            path = root / "readings.ndjson"
+            path.write_text(json.dumps(solix) + "\n", encoding="utf-8")
+            missing = str(Path(directory) / "missing.env")
+            plain = subprocess.run(
+                [str(script), directory, missing],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            detailed = subprocess.run(
+                [str(script), "-v", directory, missing],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(plain.returncode, 0, plain.stderr)
+        self.assertIn("AC out           246 W", plain.stdout)
+        self.assertIn("discharge        2 W", plain.stdout)
+        self.assertNotIn("as of", plain.stdout)
+        self.assertNotIn("0 W", plain.stdout)
+        self.assertNotIn("inactive", plain.stdout)
+        self.assertNotIn("not_connected", plain.stdout)
+        self.assertNotIn("AC output", plain.stdout)
+        self.assertEqual(detailed.returncode, 0, detailed.stderr)
+        self.assertIn("as of", detailed.stdout)
+        self.assertIn("AC in            0 W", detailed.stdout)
+        self.assertIn("charging         inactive", detailed.stdout)
+        self.assertIn("AC output        output", detailed.stdout)
+        self.assertIn("DC output        not_connected", detailed.stdout)
