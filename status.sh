@@ -113,7 +113,7 @@ print_capacity() {
     if [[ -n $wh ]]; then
       value="${value:+$value   }${wh} Wh"
     fi
-    printf '  %-17s%s\n' "shared remaining" "$value"
+    printf '  %-17s%s\n' "remaining" "$value"
   fi
   if [[ ${RUNTIME_COUNT:-0} -gt 0 ]]; then
     label="runtime"
