@@ -4,6 +4,8 @@
     python -m capacity -v
     python -m capacity --load 500
     python -m capacity --json
+
+The finished estimate is written to capacity-estimate.env for status.sh.
 """
 
 from __future__ import annotations
@@ -13,7 +15,15 @@ import json
 import sys
 from pathlib import Path
 
-from capacity.estimate import LOADS_W, MIN_SOC_POINTS, analyze, load_logs, render, to_json
+from capacity.estimate import (
+    LOADS_W,
+    MIN_SOC_POINTS,
+    analyze,
+    load_logs,
+    render,
+    to_json,
+    write_estimate,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -43,6 +53,11 @@ def _parser() -> argparse.ArgumentParser:
         default=MIN_SOC_POINTS,
         help="percentage points a continuous Solix stretch must move before inferred amp-hours are reported",
     )
+    parser.add_argument(
+        "--estimate-file",
+        default="capacity-estimate.env",
+        help="where to write the overall estimate for status.sh",
+    )
     parser.add_argument("--json", action="store_true", help="print the numbers as JSON")
     parser.add_argument(
         "-v",
@@ -64,6 +79,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.load:
         loads = tuple(dict.fromkeys([*loads, *args.load]))
     report = analyze(samples, skipped_lines=skipped, loads_w=loads, min_soc_points=args.min_soc)
+    estimate_path = Path(args.estimate_file)
+    write_estimate(report, estimate_path)
+    print(f"wrote {estimate_path}", file=sys.stderr)
     if args.json:
         print(json.dumps(to_json(report), indent=2))
     else:

@@ -243,6 +243,8 @@ before the F3800 scan. That scan can still disturb the Husky session.
 
 `status.sh` reads the newest Husky line and the newest Solix line that
 contain a reading, including from the previous day when today has none yet.
+When `capacity-estimate.env` is present, it also prints the shared remaining
+capacity and the remaining runtime from that file.
 
 # Capacity and runtime
 
@@ -274,6 +276,11 @@ inverter, divided by the load. `-v` adds the log notes (gaps, bus voltage,
 the Husky percentage, and how the watt-hours were counted). With `-v`, the
 station's own hours-remaining figure is printed with the notes. That figure
 is the Solix pack.
+
+When the report finishes it writes `capacity-estimate.env` in the current
+directory. The file records when the estimate was run, plus remaining
+percent and watt-hours and the remaining runtime at each example load.
+`status.sh` prints the shared remaining figure and those runtimes.
 
 ```bash
 .venv/bin/python -m capacity

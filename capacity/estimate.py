@@ -811,6 +811,84 @@ def _runtimes(
     return runtimes
 
 
+def estimate_env(analysis: Analysis, *, generated_at: datetime | None = None) -> str:
+    """Shell assignments for the overall estimate. ``status.sh`` sources this text."""
+
+    moment = generated_at if generated_at is not None else datetime.now().astimezone()
+    lines = [
+        "# Overall capacity estimate. Written by python -m capacity for status.sh.",
+        "# GENERATED_AT is when this estimate was run.",
+        f"GENERATED_AT={_env_quote(moment.isoformat(timespec='seconds'))}",
+        f"SOLIX_TOTAL_AH={SOLIX_AH:.0f}",
+    ]
+    lines.append(f"SOLIX_TOTAL_WH={SOLIX_WH:.0f}")
+    lines.append(f"HUSKY_TOTAL_AH={HUSKY_AH:.0f}")
+    lines.append(f"HUSKY_TOTAL_WH={HUSKY_WH:.0f}")
+    lines.append(f"SHARED_TOTAL_AH={SOLIX_AH + HUSKY_AH:.0f}")
+    lines.append(f"SHARED_TOTAL_WH={SOLIX_WH + HUSKY_WH:.0f}")
+    remaining = analysis.remaining
+    _env_remaining(lines, "SOLIX", *_pack_figures(remaining, "solix"))
+    _env_remaining(lines, "HUSKY", *_pack_figures(remaining, "husky"))
+    _env_remaining(lines, "SHARED", *_shared_figures(remaining))
+    rows = [row for row in analysis.runtimes if not row.logged]
+    lines.append(f"RUNTIME_COUNT={len(rows)}")
+    for index, row in enumerate(rows, start=1):
+        full_h = _hours(HUSKY_WH, SOLIX_WH, row.load_w)
+        lines.append(f"RUNTIME_{index}_W={_env_number(row.load_w, 0)}")
+        lines.append(f"RUNTIME_{index}_FULL_H={_env_hours(full_h)}")
+        lines.append(f"RUNTIME_{index}_REMAINING_H={_env_hours(row.combined_h)}")
+    return "\n".join(lines) + "\n"
+
+
+def write_estimate(analysis: Analysis, path: Path) -> None:
+    """Replace ``path`` with the overall estimate. Readers never see a partial file."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.tmp")
+    temporary.write_text(estimate_env(analysis), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _env_remaining(
+    lines: list[str],
+    prefix: str,
+    amp_hours: float | None,
+    watt_hours: float | None,
+    percent: float | None,
+) -> None:
+    lines.append(f"{prefix}_REMAINING_AH={_env_ah(amp_hours)}")
+    lines.append(f"{prefix}_REMAINING_WH={'' if watt_hours is None else str(_wh(watt_hours))}")
+    lines.append(f"{prefix}_REMAINING_PERCENT={_env_pct(percent)}")
+
+
+def _env_quote(value: str) -> str:
+    return '"' + value.replace('"', "") + '"'
+
+
+def _env_pct(value: float | None) -> str:
+    if value is None:
+        return ""
+    return _pct(value)[:-1]
+
+
+def _env_ah(value: float | None) -> str:
+    if value is None:
+        return ""
+    return f"{value:.1f}"
+
+
+def _env_hours(value: float | None) -> str:
+    if value is None:
+        return ""
+    return f"{value:.1f}"
+
+
+def _env_number(value: float, whole_digits: int) -> str:
+    if abs(value - round(value)) < 0.05:
+        return str(int(round(value)))
+    return f"{value:.{whole_digits}f}" if whole_digits else f"{value:.1f}"
+
+
 def _hours(husky_wh: float | None, solix_wh: float | None, load_w: float) -> float | None:
     if load_w <= 0:
         return None

@@ -1,4 +1,5 @@
 .env
+capacity-estimate.env
 .venv/
 __pycache__/
 *.pyc

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Print the newest Husky reading and the newest Solix F3800 reading.
-# Usage: ./status.sh [data-dir]
+# Print the newest Husky reading, the newest Solix F3800 reading, and the
+# remaining capacity estimate from capacity-estimate.env when that file exists.
+# Usage: ./status.sh [data-dir] [estimate-file]
 
 set -euo pipefail
 
@@ -96,6 +97,40 @@ print_solix() {
   '
 }
 
+estimate=${2:-"$root/capacity-estimate.env"}
+
+print_capacity() {
+  local label pct wh value i w_name h_name w h
+  echo
+  echo "Capacity"
+  pct=${SHARED_REMAINING_PERCENT:-}
+  wh=${SHARED_REMAINING_WH:-}
+  if [[ -n $pct || -n $wh ]]; then
+    value=""
+    if [[ -n $pct ]]; then
+      value="${pct}%"
+    fi
+    if [[ -n $wh ]]; then
+      value="${value:+$value   }${wh} Wh"
+    fi
+    printf '  %-17s%s\n' "shared remaining" "$value"
+  fi
+  if [[ ${RUNTIME_COUNT:-0} -gt 0 ]]; then
+    label="runtime"
+    for ((i = 1; i <= RUNTIME_COUNT; i++)); do
+      w_name=RUNTIME_${i}_W
+      h_name=RUNTIME_${i}_REMAINING_H
+      w=${!w_name:-}
+      h=${!h_name:-}
+      if [[ -z $w || -z $h ]]; then
+        continue
+      fi
+      printf '  %-17s%6s W %6s h\n' "$label" "$w" "$h"
+      label=""
+    done
+  fi
+}
+
 found=0
 if husky=$(latest husky); then
   printf '%s\n' "$husky" | print_husky
@@ -112,6 +147,19 @@ else
   echo "Solix F3800   no reading under $data"
 fi
 
-if ((found == 0)); then
+shown_estimate=0
+if [[ -f $estimate ]]; then
+  # The file is assignments written by python -m capacity.
+  # shellcheck disable=SC1090
+  source "$estimate"
+  print_capacity
+  shown_estimate=1
+else
+  echo
+  echo "Capacity"
+  echo "  no estimate yet. Run python -m capacity."
+fi
+
+if ((found == 0 && shown_estimate == 0)); then
   exit 1
 fi

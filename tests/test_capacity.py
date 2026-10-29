@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -18,6 +19,7 @@ from capacity.estimate import (
     Sample,
     analyze,
     battery_bus_watts,
+    estimate_env,
     load_logs,
     render,
     to_json,
@@ -110,6 +112,10 @@ class MeasureTests(unittest.TestCase):
         self.assertNotIn("logged", text)
         self.assertNotIn("would be a 40 Ah pack", text)
         self.assertNotIn("counted so far", text)
+        env = estimate_env(report, generated_at=datetime.fromisoformat("2026-10-29T12:00:00-04:00"))
+        self.assertIn("SOLIX_REMAINING_PERCENT=60", env)
+        self.assertIn("HUSKY_REMAINING_PERCENT=\n", env)
+        self.assertIn("SHARED_REMAINING_PERCENT=\n", env)
         notes = render(report, verbose=True)
         self.assertIn("would be a 40 Ah pack", notes)
         self.assertIn("75 Ah nameplate", notes)
@@ -216,6 +222,16 @@ class MeasureTests(unittest.TestCase):
         self.assertIn("16.1 h", text)
         self.assertIn("14.3 h", text)
         self.assertNotIn("logged", text)
+        env = estimate_env(report, generated_at=datetime.fromisoformat("2026-10-29T12:00:00-04:00"))
+        self.assertIn('GENERATED_AT="2026-10-29T12:00:00-04:00"', env)
+        self.assertNotIn("LOG_START", env)
+        self.assertNotIn("LOG_END", env)
+        self.assertIn("HUSKY_REMAINING_PERCENT=80", env)
+        self.assertIn("SOLIX_REMAINING_PERCENT=100", env)
+        self.assertIn("SHARED_REMAINING_PERCENT=88.6", env)
+        self.assertIn("RUNTIME_3_W=500", env)
+        self.assertIn("RUNTIME_3_FULL_H=16.1", env)
+        self.assertIn("RUNTIME_3_REMAINING_H=14.3", env)
         self.assertNotIn("not used", text)
         self.assertNotIn("200 Ah", text)
         self.assertNotIn("Combined", text)
@@ -317,13 +333,20 @@ class LogTests(unittest.TestCase):
             }
             path = root / "readings.ndjson"
             path.write_text(json.dumps(row) + "\n" + json.dumps(solix) + "\n", encoding="utf-8")
+            estimate = Path(directory) / "capacity-estimate.env"
             buffer = io.StringIO()
             with redirect_stdout(buffer):
-                code = main(["--data-dir", directory, "--load", "420"])
+                code = main(["--data-dir", directory, "--load", "420", "--estimate-file", str(estimate)])
             verbose = io.StringIO()
             with redirect_stdout(verbose):
-                verbose_code = main(["--data-dir", directory, "--load", "420", "-v"])
+                verbose_code = main(
+                    ["--data-dir", directory, "--load", "420", "-v", "--estimate-file", str(estimate)]
+                )
+            saved = estimate.read_text(encoding="utf-8")
         self.assertEqual(code, 0)
+        self.assertIn("SHARED_REMAINING_PERCENT=100", saved)
+        self.assertIn("RUNTIME_3_W=420", saved)
+        self.assertIn("RUNTIME_3_REMAINING_H=", saved)
         text = buffer.getvalue()
         self.assertIn("420 W", text)
         self.assertIn("8960 Wh", text)
@@ -338,3 +361,70 @@ class LogTests(unittest.TestCase):
         self.assertIn("420 W", notes)
         self.assertIn("not used", notes)
         self.assertIn("Bus voltage", notes)
+
+    def test_status_shows_remaining_from_the_estimate_file(self) -> None:
+        script = Path(__file__).resolve().parents[1] / "status.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "2026" / "10" / "25"
+            root.mkdir(parents=True)
+            row = {
+                "time": "2026-10-25T12:00:00-04:00",
+                "device": "husky",
+                "voltage_v": 53.3,
+                "current_a": 0.0,
+                "soc_percent": 48.0,
+            }
+            solix = {
+                "time": "2026-10-25T12:00:00-04:00",
+                "device": "f3800",
+                "soc_percent": 13,
+                "ac_power_out_w": 300,
+                "hours_remaining": 3.8,
+            }
+            path = root / "readings.ndjson"
+            path.write_text(json.dumps(row) + "\n" + json.dumps(solix) + "\n", encoding="utf-8")
+            estimate = Path(directory) / "capacity-estimate.env"
+            estimate.write_text(
+                "\n".join(
+                    [
+                        'GENERATED_AT="2026-10-29T12:00:00-04:00"',
+                        "SOLIX_REMAINING_PERCENT=13",
+                        "SOLIX_REMAINING_WH=499",
+                        "HUSKY_REMAINING_PERCENT=65.1",
+                        "HUSKY_REMAINING_WH=3331",
+                        "SHARED_REMAINING_PERCENT=42.7",
+                        "SHARED_REMAINING_WH=3830",
+                        "RUNTIME_COUNT=2",
+                        "RUNTIME_1_W=100",
+                        "RUNTIME_1_FULL_H=80.6",
+                        "RUNTIME_1_REMAINING_H=34.5",
+                        "RUNTIME_2_W=500",
+                        "RUNTIME_2_REMAINING_H=6.9",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            shown = subprocess.run(
+                [str(script), directory, str(estimate)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            missing = subprocess.run(
+                [str(script), directory, str(Path(directory) / "missing.env")],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        self.assertIn("shared remaining 42.7%   3830 Wh", shown.stdout)
+        self.assertNotIn("Solix remaining", shown.stdout)
+        self.assertNotIn("Husky remaining", shown.stdout)
+        self.assertNotIn("logs through", shown.stdout)
+        self.assertIn("34.5 h", shown.stdout)
+        self.assertIn("6.9 h", shown.stdout)
+        self.assertNotIn("80.6", shown.stdout)
+        self.assertEqual(missing.returncode, 0, missing.stderr)
+        self.assertIn("no estimate yet", missing.stdout)
+        self.assertIn("Solix F3800", missing.stdout)
