@@ -12,11 +12,24 @@ Nameplate figures:
   5120 Wh, 16S. Operating window 48–57 V. Suggested low cutoff 50.8 V.
   BMS cutoff 42–47 V. Charge window 55.6–57 V.
 
-A continuous stretch that moves a counter by 10 points replaces that
-pack's nameplate. Amp-hours are not invented across a gap. A voltage drop
-at a constant counter, just after charge current stops, is surface charge
-leaving the cells. ``discharge_power_w`` is not a battery current: on this
-station it sits near 70 W through charge and idle.
+The Solix percentage is the watt-hours left in the Solix pack. The Husky
+percentage is not. On this bus it moves as if the pack were about 60 Ah.
+Husky watt-hours are amp-hours counted from the last time the pack was
+rested full: Solix near 100% and the lowest cell at or above 3.30 V. That
+is where this Solix stops the charge. A generic chart's 3.40 V rested-full
+assumes a charge to 3.65 V per cell, which this bus does not reach.
+
+The lowest cell is the empty check, not a percentage. The curve is flat
+from about 3.20 V to 3.33 V. The Husky's suggested stop is 50.8 V, which
+is 3.175 V per cell. Its operating floor is 48 V, 3.00 V per cell. The
+F3800 publishes no pack cutoff.
+
+Amp-hours inferred for the Solix are the bus minus the Husky. They do not
+replace the 75 Ah nameplate. Amp-hours are not invented across a gap. A
+voltage drop while the Husky percentage holds still, just after charge
+current stops, is surface charge leaving the cells. ``discharge_power_w``
+is not a battery current: on this station it sits near 70 W through charge
+and idle.
 """
 
 from __future__ import annotations
@@ -41,6 +54,12 @@ HUSKY_BMS_CUTOFF_MIN_V = 42.0
 HUSKY_BMS_CUTOFF_MAX_V = 47.0
 HUSKY_CHARGE_MIN_V = 55.6
 HUSKY_CHARGE_MAX_V = 57.0
+# Rested lowest cell when the Solix counter is still full on this bus.
+HUSKY_FULL_CELL_V = 3.30
+HUSKY_STOP_CELL_V = HUSKY_SUGGESTED_STOP_V / 16
+HUSKY_FLOOR_CELL_V = HUSKY_OPERATING_MIN_V / 16
+REST_AMPS = 0.5
+SOLIX_FULL_SOC = 98.0
 
 CHARGER_EFF = 0.90
 INVERTER_EFF = 0.90
@@ -114,6 +133,21 @@ class Gap:
 
 
 @dataclass(frozen=True)
+class HuskyCount:
+    """Husky state from cell voltage and counted amp-hours, not its percentage."""
+
+    soc: float | None
+    amp_hours_out: float | None
+    anchor_soc: float | None
+    anchor_time: datetime | None
+    anchor_cell_v: float | None
+    register_soc: float | None
+    register_ah: float | None
+    min_cell_v: float | None
+    at_stop: bool
+
+
+@dataclass(frozen=True)
 class Remaining:
     husky_wh: float | None
     solix_wh: float | None
@@ -156,6 +190,7 @@ class Analysis:
     legs: tuple[Leg, ...]
     husky_ah: float | None
     solix_ah: float | None
+    husky_count: HuskyCount | None
     relaxation: Relaxation | None
     largest_gap: Gap | None
     skipped_lines: int
@@ -239,14 +274,14 @@ def analyze(
     voltages = [sample.voltage_v for sample in samples if sample.voltage_v is not None]
     husky_socs = [sample.husky_soc for sample in samples if sample.husky_soc is not None]
     solix_socs = [sample.solix_soc for sample in samples if sample.solix_soc is not None]
+    count = _count_husky(samples)
     legs = _legs(samples, min_soc_points)
-    husky_ah = _combine([leg for leg in legs if leg.pack == "husky"])
-    solix_ah = _combine([leg for leg in legs if leg.pack == "solix"])
+    solix_ah = _combine(legs)
     peak = _charge_peak(samples)
     relaxation = _relaxation(samples)
     gap = _largest_gap(samples)
     latest = samples[-1] if samples else None
-    remaining = _remaining(samples, husky_ah, solix_ah)
+    remaining = _remaining(samples, count)
     observed = _logged_load(samples) if logged_load else None
     runtimes = _runtimes(remaining, loads_w, observed)
     return Analysis(
@@ -267,8 +302,9 @@ def analyze(
         husky_span=_continuous_span(samples, "husky_soc"),
         solix_span=_continuous_span(samples, "solix_soc"),
         legs=tuple(legs),
-        husky_ah=husky_ah,
+        husky_ah=None,
         solix_ah=solix_ah,
+        husky_count=count,
         relaxation=relaxation,
         largest_gap=gap,
         skipped_lines=skipped_lines,
@@ -303,7 +339,8 @@ def to_json(analysis: Analysis) -> dict[str, object]:
         "start": None if analysis.start is None else analysis.start.isoformat(),
         "end": None if analysis.end is None else analysis.end.isoformat(),
         "nameplate_ah": {"solix": SOLIX_AH, "husky": HUSKY_AH},
-        "measured_ah": {"solix": analysis.solix_ah, "husky": analysis.husky_ah},
+        "measured_ah": {"solix": analysis.solix_ah, "husky": None},
+        "husky_count": _count_json(analysis.husky_count),
         "voltage_min": analysis.voltage_min,
         "voltage_max": analysis.voltage_max,
         "remaining_wh": None
@@ -379,7 +416,7 @@ def _stretches(samples: list[Sample]) -> list[list[Sample]]:
 def _legs(samples: list[Sample], min_points: float) -> list[Leg]:
     found: list[Leg] = []
     for stretch in _stretches(samples):
-        for pack, attr in (("husky", "husky_soc"), ("solix", "solix_soc")):
+        for pack, attr in (("solix", "solix_soc"),):
             for run in _present_runs(stretch, attr):
                 for leg_samples in _monotonic(run, attr):
                     leg = _leg(pack, attr, leg_samples, min_points)
@@ -534,11 +571,20 @@ def _active_runs(samples: list[Sample], *, positive: bool) -> list[list[Sample]]
 
 
 def _relaxation(samples: list[Sample]) -> Relaxation | None:
-    charge_at: int | None = None
+    best: Relaxation | None = None
+    best_drop = 0.0
     for run in _active_runs(samples, positive=True):
-        charge_at = samples.index(run[-1])
-    if charge_at is None:
-        return None
+        found = _relaxation_after(samples, samples.index(run[-1]))
+        if found is None:
+            continue
+        drop = found.first_rest_v - found.last_rest_v
+        if drop > best_drop:
+            best = found
+            best_drop = drop
+    return best
+
+
+def _relaxation_after(samples: list[Sample], charge_at: int) -> Relaxation | None:
     rest: list[Sample] = []
     for sample in samples[charge_at + 1 :]:
         if _in_sustained_discharge(samples, sample):
@@ -611,33 +657,105 @@ def _moved(before: float | None, after: float | None) -> bool:
     return abs(after - before) >= 0.5
 
 
-def _remaining(
-    samples: list[Sample],
-    husky_ah: float | None,
-    solix_ah: float | None,
-) -> Remaining | None:
-    husky = next((sample for sample in reversed(samples) if sample.husky_soc is not None), None)
+def _is_full(sample: Sample) -> bool:
+    """Rested, Solix still full, and the lowest cell at this bus's full voltage."""
+
+    if sample.current_a is None or abs(sample.current_a) >= REST_AMPS:
+        return False
+    if sample.solix_soc is None or sample.solix_soc < SOLIX_FULL_SOC:
+        return False
+    if sample.min_cell_v is None or sample.min_cell_v < HUSKY_FULL_CELL_V:
+        return False
+    return True
+
+
+def _count_husky(samples: list[Sample]) -> HuskyCount:
+    """Amp-hours out of the Husky since the latest rested full cell.
+
+    The integral is left Riemann and skips a gap. The Husky percentage is
+    stored beside the count. It is not a capacity.
+    """
+
+    cumulative = 0.0
+    anchor_cum: float | None = None
+    anchor_soc: float | None = None
+    anchor_time: datetime | None = None
+    anchor_cell: float | None = None
+    anchor_register: float | None = None
+    previous: Sample | None = None
+    for sample in samples:
+        if previous is not None and previous.current_a is not None:
+            dt = (sample.time - previous.time).total_seconds()
+            if 0 < dt <= MAX_GAP_S:
+                cumulative += previous.current_a * dt / 3600.0
+        if _is_full(sample):
+            anchor_cum = cumulative
+            anchor_soc = sample.solix_soc
+            anchor_time = sample.time
+            anchor_cell = sample.min_cell_v
+            anchor_register = sample.husky_soc
+        previous = sample
+    latest_cell = next(
+        (sample.min_cell_v for sample in reversed(samples) if sample.min_cell_v is not None),
+        None,
+    )
+    latest_register = next(
+        (sample.husky_soc for sample in reversed(samples) if sample.husky_soc is not None),
+        None,
+    )
+    at_stop = latest_cell is not None and latest_cell <= HUSKY_STOP_CELL_V
+    amp_hours_out = None
+    soc = None
+    register_ah = None
+    if anchor_cum is not None and anchor_soc is not None:
+        amp_hours_out = -(cumulative - anchor_cum)
+        soc = min(100.0, max(0.0, anchor_soc - amp_hours_out / HUSKY_AH * 100.0))
+        drop = None
+        if anchor_register is not None and latest_register is not None:
+            drop = anchor_register - latest_register
+        if amp_hours_out > 1.0 and drop is not None and drop >= 5.0:
+            register_ah = amp_hours_out / (drop / 100.0)
+    return HuskyCount(
+        soc=soc,
+        amp_hours_out=amp_hours_out,
+        anchor_soc=anchor_soc,
+        anchor_time=anchor_time,
+        anchor_cell_v=anchor_cell,
+        register_soc=latest_register,
+        register_ah=register_ah,
+        min_cell_v=latest_cell,
+        at_stop=at_stop,
+    )
+
+
+def _remaining(samples: list[Sample], count: HuskyCount) -> Remaining | None:
     solix = next((sample for sample in reversed(samples) if sample.solix_soc is not None), None)
-    if husky is None and solix is None:
-        return None
-    husky_capacity = HUSKY_AH if husky_ah is None else husky_ah
-    solix_capacity = SOLIX_AH if solix_ah is None else solix_ah
-    husky_wh = None
+    # The Solix percentage is the station's own count of its 75 Ah pack.
+    # Amp-hours inferred from the bus are short of that, so they do not replace it.
+    solix_capacity = SOLIX_AH
     solix_wh = None
-    if husky is not None and husky.husky_soc is not None:
-        husky_wh = husky_capacity * NOMINAL_V * husky.husky_soc / 100.0
     if solix is not None and solix.solix_soc is not None:
         solix_wh = solix_capacity * NOMINAL_V * solix.solix_soc / 100.0
+    husky_wh = None
+    husky_soc = None
+    if count.at_stop:
+        husky_wh = 0.0
+        husky_soc = 0.0
+    elif count.soc is not None:
+        husky_wh = HUSKY_AH * NOMINAL_V * count.soc / 100.0
+        husky_soc = count.soc
+    if husky_wh is None and solix_wh is None:
+        return None
     return Remaining(
         husky_wh=husky_wh,
         solix_wh=solix_wh,
-        husky_ah=husky_capacity,
+        husky_ah=HUSKY_AH,
         solix_ah=solix_capacity,
-        husky_soc=None if husky is None else husky.husky_soc,
+        husky_soc=husky_soc,
         solix_soc=None if solix is None else solix.solix_soc,
-        husky_from_log=husky_ah is not None,
-        solix_from_log=solix_ah is not None,
-        husky_time=None if husky is None else husky.time,
+        husky_from_log=False,
+        solix_from_log=False,
+        husky_time=count.anchor_time,
         solix_time=None if solix is None else solix.time,
     )
 
@@ -672,10 +790,13 @@ def _runtimes(
     rows.sort(key=lambda item: (item[0], item[1]))
     runtimes = []
     for load, logged in rows:
+        combined_h = None
+        if remaining.husky_wh is not None and remaining.solix_wh is not None:
+            combined_h = _hours(remaining.husky_wh, remaining.solix_wh, load)
         runtimes.append(
             Runtime(
                 load_w=load,
-                combined_h=_hours(remaining.husky_wh, remaining.solix_wh, load),
+                combined_h=combined_h,
                 solix_h=_hours(None, remaining.solix_wh, load),
                 logged=logged,
             )
@@ -733,19 +854,26 @@ def _nameplate(lines: list[str]) -> None:
 def _measured(lines: list[str], analysis: Analysis) -> None:
     lines.append("")
     lines.append("Measured")
-    if analysis.husky_ah is None and analysis.solix_ah is None:
+    if analysis.solix_ah is None:
         lines.append(
-            "  Neither counter moved "
-            f"{MIN_SOC_POINTS:.0f} points inside a continuous stretch, so the nameplate stands."
+            "  The Solix percentage did not move "
+            f"{MIN_SOC_POINTS:.0f} points inside a continuous stretch, "
+            f"so its {SOLIX_AH:.0f} Ah nameplate stands."
         )
-    if analysis.husky_ah is not None:
-        lines.append(f"  Husky {analysis.husky_ah:.0f} Ah from the log, nameplate {HUSKY_AH:.0f} Ah.")
-    if analysis.solix_ah is not None:
+    else:
+        points = sum(abs(leg.soc_end - leg.soc_start) for leg in analysis.legs)
+        amp_hours = sum(abs(leg.amp_hours) for leg in analysis.legs)
         lines.append(
-            f"  Solix {analysis.solix_ah:.0f} Ah from the log, nameplate {SOLIX_AH:.0f} Ah."
-            " Solix amp-hours assume a 90% charger and a 90% inverter."
+            f"  Inferred Solix current is {amp_hours:.0f} Ah across {points:.0f} points,"
+            f" which would be a {analysis.solix_ah:.0f} Ah pack."
+            " That current is the bus minus the Husky, assuming a 90% charger and a 90% inverter."
+            f" Remaining watt-hours use the {SOLIX_AH:.0f} Ah nameplate."
         )
-    _soc_line(lines, "Husky", analysis.husky_soc_min, analysis.husky_soc_max, analysis.husky_span)
+    lines.append(
+        "  The Husky percentage is not a capacity measurement."
+        " Remaining Husky watt-hours are amp-hours counted from a rested full cell."
+    )
+    _register_line(lines, analysis.husky_soc_min, analysis.husky_soc_max, analysis.husky_span)
     _soc_line(lines, "Solix", analysis.solix_soc_min, analysis.solix_soc_max, analysis.solix_span)
     gap = analysis.largest_gap
     if gap is not None:
@@ -753,6 +881,22 @@ def _measured(lines: list[str], analysis: Analysis) -> None:
             f"  A {_span(gap.seconds)} gap sits between samples, and a counter moved across it."
             " The amp-hours in that gap are not in the file."
         )
+
+
+def _register_line(
+    lines: list[str],
+    low: float | None,
+    high: float | None,
+    span: float,
+) -> None:
+    if low is None or high is None:
+        lines.append("  The Husky percentage was not in the log.")
+        return
+    points = "point" if abs(span - 1.0) < 0.05 else "points"
+    lines.append(
+        f"  The Husky percentage in the log is {_pct(low)}–{_pct(high)} and is not calibrated."
+        f" The longest continuous move is {span:.0f} {points}."
+    )
 
 
 def _soc_line(
@@ -796,6 +940,14 @@ def _voltage(lines: list[str], analysis: Analysis) -> None:
         f"  {above_stop:.2f} V above the Husky suggested stop at {HUSKY_SUGGESTED_STOP_V:.1f} V,"
         f" and {above_floor:.2f} V above the {HUSKY_OPERATING_MIN_V:.0f} V operating floor."
     )
+    if latest.min_cell_v is not None:
+        lines.append(
+            f"  Lowest cell {latest.min_cell_v:.3f} V."
+            f" The suggested stop is {HUSKY_STOP_CELL_V:.3f} V per cell"
+            f" ({HUSKY_SUGGESTED_STOP_V:.1f} V),"
+            f" and the operating floor is {HUSKY_FLOOR_CELL_V:.2f} V per cell"
+            f" ({HUSKY_OPERATING_MIN_V:.0f} V)."
+        )
     if (
         analysis.charge_peak_v is not None
         and analysis.charge_peak_v < HUSKY_CHARGE_MIN_V
@@ -804,13 +956,13 @@ def _voltage(lines: list[str], analysis: Analysis) -> None:
     ):
         lines.append(
             f"  The highest charge voltage was {analysis.charge_peak_v:.2f} V"
-            f" at {analysis.charge_peak_a:.1f} A with the Husky at {_pct(analysis.charge_peak_soc)}."
+            f" at {analysis.charge_peak_a:.1f} A with the Husky percentage at {_pct(analysis.charge_peak_soc)}."
             f" The Husky charge window is {HUSKY_CHARGE_MIN_V:.1f}–{HUSKY_CHARGE_MAX_V:.0f} V,"
             " so the Solix is finishing the charge on its own curve."
         )
     rest = analysis.relaxation
     if rest is not None:
-        held = f"the Husky stayed at {_pct(rest.husky_soc)}"
+        held = f"the Husky percentage stayed at {_pct(rest.husky_soc)}"
         if rest.solix_soc is not None:
             held += f" and the Solix stayed at {_pct(rest.solix_soc)}"
         lines.append(
@@ -821,9 +973,9 @@ def _voltage(lines: list[str], analysis: Analysis) -> None:
             f" while {held}. That is surface charge leaving. It is not a measure of capacity."
         )
     lines.append(
-        "  LiFePO4 voltage stays nearly still from about 20% to 90%."
-        " The Solix percentage does not include the Husky."
-        " A slower voltage drop under load is the sign of that extra capacity."
+        "  From about 3.20 V to 3.33 V per cell the voltage barely moves,"
+        " so it is not turned into a percentage. It checks that the Husky is"
+        " still above 3.175 V. The Solix percentage is the Solix pack."
     )
 
 
@@ -834,17 +986,61 @@ def _write_remaining(lines: list[str], analysis: Analysis) -> None:
     if remaining is None or (remaining.husky_wh is None and remaining.solix_wh is None):
         lines.append("  no state of charge in the log")
         return
-    _pack_remaining(lines, "Husky", remaining.husky_wh, remaining.husky_soc, remaining.husky_ah, remaining.husky_from_log, HUSKY_AH)
+    _write_husky(lines, remaining, analysis.husky_count)
     _pack_remaining(lines, "Solix", remaining.solix_wh, remaining.solix_soc, remaining.solix_ah, remaining.solix_from_log, SOLIX_AH)
-    combined = (remaining.husky_wh or 0.0) + (remaining.solix_wh or 0.0)
     if remaining.husky_wh is not None and remaining.solix_wh is not None:
-        lines.append(f"  Combined {combined:.0f} Wh.")
+        lines.append(f"  Combined {remaining.husky_wh + remaining.solix_wh:.0f} Wh.")
     if remaining.solix_wh is not None:
         lines.append(f"  Solix alone is {remaining.solix_wh:.0f} Wh.")
     latest = analysis.latest
     if latest is not None and latest.solix_hours is not None:
         lines.append(
             f"  The station last reported {latest.solix_hours:.1f} h remaining, from its own pack."
+        )
+
+
+def _write_husky(lines: list[str], remaining: Remaining, count: HuskyCount | None) -> None:
+    if count is None:
+        lines.append("  Husky watt-hours are not counted.")
+        return
+    if count.at_stop and count.min_cell_v is not None:
+        lines.append(
+            f"  The lowest cell is {count.min_cell_v:.3f} V, at or below"
+            f" {HUSKY_STOP_CELL_V:.3f} V. Remaining Husky watt-hours are 0."
+        )
+        _register_note(lines, count)
+        return
+    if count.soc is None or remaining.husky_wh is None or count.anchor_soc is None:
+        lines.append(
+            "  Husky watt-hours are left out. The log has no rested full point"
+            " (Solix near 100% and the lowest cell at or above"
+            f" {HUSKY_FULL_CELL_V:.2f} V). The Husky percentage is not used."
+        )
+        return
+    when = "" if count.anchor_time is None else f" at {_when(count.anchor_time)}"
+    cell = "" if count.anchor_cell_v is None else f", lowest cell {count.anchor_cell_v:.3f} V"
+    amp_hours = 0.0 if count.amp_hours_out is None else count.amp_hours_out
+    if amp_hours >= 0:
+        moved = f"{amp_hours:.1f} Ah have left since then."
+    else:
+        moved = f"{-amp_hours:.1f} Ah have gone in since then."
+    lines.append(
+        f"  Husky {_pct(count.soc)} of the {HUSKY_AH:.0f} Ah nameplate"
+        f" = {remaining.husky_wh:.0f} Wh, counted from Solix {_pct(count.anchor_soc)}{when}{cell}."
+        f" {moved}"
+    )
+    _register_note(lines, count)
+
+
+def _register_note(lines: list[str], count: HuskyCount) -> None:
+    if count.register_soc is None:
+        lines.append("  The Husky percentage was not in the log and is not used.")
+        return
+    lines.append(f"  The Husky percentage reads {_pct(count.register_soc)} and is not used.")
+    if count.register_ah is not None:
+        lines.append(
+            f"  That percentage moved as if the pack were {count.register_ah:.0f} Ah."
+            f" The nameplate is {HUSKY_AH:.0f} Ah."
         )
 
 
@@ -912,6 +1108,18 @@ def _hour(value: float | None) -> str:
     if value is None:
         return "—"
     return f"{value:.1f} h"
+
+
+def _count_json(count: HuskyCount | None) -> dict[str, object] | None:
+    if count is None:
+        return None
+    return {
+        "soc": _round(count.soc, 1),
+        "amp_hours_out": _round(count.amp_hours_out, 2),
+        "register_soc": _round(count.register_soc, 1),
+        "register_ah": _round(count.register_ah, 1),
+        "at_stop": count.at_stop,
+    }
 
 
 def _round(value: float | None, digits: int) -> float | None:

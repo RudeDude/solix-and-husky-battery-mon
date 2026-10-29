@@ -20,7 +20,8 @@ def _parser() -> argparse.ArgumentParser:
         prog="capacity",
         description=(
             "Read data/**/readings.ndjson and estimate combined capacity and "
-            "runtime. The Solix percentage is its own pack. The Husky is extra."
+            "runtime. The Solix percentage is its own pack. Husky watt-hours "
+            "are counted from a rested full cell. The Husky percentage is not used."
         ),
     )
     parser.add_argument(
@@ -39,7 +40,7 @@ def _parser() -> argparse.ArgumentParser:
         "--min-soc",
         type=float,
         default=MIN_SOC_POINTS,
-        help="percentage points a continuous stretch must move before it replaces the nameplate",
+        help="percentage points a continuous Solix stretch must move before inferred amp-hours are reported",
     )
     parser.add_argument("--json", action="store_true", help="print the numbers as JSON")
     return parser

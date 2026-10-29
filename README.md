@@ -254,10 +254,17 @@ reading. The Solix reports no pack voltage.
 The Husky 2 operating window is 48–57 V, with a suggested low cutoff of
 50.8 V and a BMS cutoff of 42–47 V. Its charge window is 55.6–57 V. The
 F3800 publishes 51.2 V and 75 Ah and does not publish a pack cutoff, so
-50.8 V is the shared stop on this pair. LiFePO4 voltage barely moves from
-about 20% to 90%. A drop while both counters hold still, just after
-charging, is surface charge leaving. A continuous stretch that moves a
-counter by 10 points replaces that pack's nameplate. A gap is not filled in.
+50.8 V is the shared stop on this pair. From about 3.20 V to 3.33 V per
+cell the voltage barely moves, so the lowest cell is checked against
+3.175 V and is not turned into a percentage. A drop while the Solix
+percentage holds still, just after charging, is surface charge leaving.
+
+Remaining Solix watt-hours follow the Solix percentage on the 75 Ah
+nameplate. Amp-hours inferred for the Solix are the bus minus the Husky,
+and they do not replace that nameplate. The Husky percentage is not
+calibrated. Remaining Husky watt-hours are amp-hours counted from the last
+rested full cell, when the Solix is near 100% and the lowest cell is at or
+above 3.30 V. A gap is not filled in.
 
 Runtime is the remaining DC watt-hours, times a 90% inverter, divided by an
 AC load. The station's own hours-remaining figure is printed beside it and
