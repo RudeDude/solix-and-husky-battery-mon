@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Print the newest Husky reading, the newest Solix F3800 reading, and the
-# remaining capacity estimate from capacity-estimate.env when that file exists.
+# usable and remaining capacity from capacity-estimate.env when that file exists.
 # Usage: ./status.sh [-v] [data-dir] [estimate-file]
 #
 # -v also prints the as-of times, zero-watt lines, and the usual
@@ -122,9 +122,13 @@ print_solix() {
 }
 
 print_capacity() {
-  local label pct wh value i w_name h_name w h
+  local label pct wh value i w_name h_name w h usable
   echo
   echo "Capacity"
+  usable=${SHARED_USABLE_WH:-}
+  if [[ -n $usable ]]; then
+    printf '  %-17s%s\n' "usable" "$usable Wh"
+  fi
   pct=${SHARED_REMAINING_PERCENT:-}
   wh=${SHARED_REMAINING_WH:-}
   if [[ -n $pct || -n $wh ]]; then

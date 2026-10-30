@@ -31,7 +31,7 @@ def _parser() -> argparse.ArgumentParser:
         prog="capacity",
         description=(
             "Read data/**/readings.ndjson and estimate combined capacity and "
-            "runtime. The default print is total and remaining capacity, plus "
+            "runtime. The default print is usable and remaining capacity, plus "
             "shared-pack runtime. -v adds the log notes."
         ),
     )

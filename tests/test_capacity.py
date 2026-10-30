@@ -108,7 +108,7 @@ class MeasureTests(unittest.TestCase):
         text = render(report)
         self.assertIn("45.0 Ah", text)
         self.assertIn("2304 Wh", text)
-        self.assertIn("80.6 h", text)
+        self.assertIn("59.3 h", text)
         self.assertNotIn("logged", text)
         self.assertNotIn("would be a 40 Ah pack", text)
         self.assertNotIn("counted so far", text)
@@ -207,31 +207,34 @@ class MeasureTests(unittest.TestCase):
         self.assertIsNotNone(count)
         assert count is not None
         self.assertAlmostEqual(count.amp_hours_out or 0.0, 20.0, delta=0.01)
-        self.assertAlmostEqual(count.soc or 0.0, 80.0, delta=0.1)
+        self.assertAlmostEqual(count.usable_ah, 53.6, delta=0.05)
+        self.assertAlmostEqual(count.soc or 0.0, 100.0 * (53.6 - 20.0) / 53.6, delta=0.1)
         self.assertAlmostEqual(count.register_ah or 0.0, 200.0, delta=1.0)
-        self.assertFalse(count.at_stop)
+        self.assertFalse(count.at_empty)
         self.assertIsNotNone(report.remaining)
         assert report.remaining is not None
-        husky_wh = 100.0 * NOMINAL_V * 0.80
+        husky_wh = (53.6 - 20.0) * NOMINAL_V
         self.assertAlmostEqual(report.remaining.husky_wh or 0.0, husky_wh, delta=5.0)
         text = render(report)
-        self.assertIn("80.0 Ah", text)
-        self.assertIn("4096 Wh", text)
-        self.assertIn("8960 Wh", text)
+        self.assertIn("33.6 Ah", text)
+        self.assertIn("1720 Wh", text)
+        self.assertIn("6584 Wh", text)
         self.assertIn("Shared runtime", text)
-        self.assertIn("16.1 h", text)
-        self.assertIn("14.3 h", text)
+        self.assertIn("11.9 h", text)
+        self.assertIn("10.0 h", text)
         self.assertNotIn("logged", text)
         env = estimate_env(report, generated_at=datetime.fromisoformat("2026-10-29T12:00:00-04:00"))
         self.assertIn('GENERATED_AT="2026-10-29T12:00:00-04:00"', env)
         self.assertNotIn("LOG_START", env)
         self.assertNotIn("LOG_END", env)
-        self.assertIn("HUSKY_REMAINING_PERCENT=80", env)
+        self.assertIn("HUSKY_USABLE_AH=53.6", env)
+        self.assertIn("SHARED_USABLE_WH=6584", env)
+        self.assertIn("HUSKY_REMAINING_PERCENT=62.7", env)
         self.assertIn("SOLIX_REMAINING_PERCENT=100", env)
-        self.assertIn("SHARED_REMAINING_PERCENT=88.6", env)
+        self.assertIn("SHARED_REMAINING_PERCENT=84.4", env)
         self.assertIn("RUNTIME_3_W=500", env)
-        self.assertIn("RUNTIME_3_FULL_H=16.1", env)
-        self.assertIn("RUNTIME_3_REMAINING_H=14.3", env)
+        self.assertIn("RUNTIME_3_FULL_H=11.9", env)
+        self.assertIn("RUNTIME_3_REMAINING_H=10.0", env)
         self.assertNotIn("not used", text)
         self.assertNotIn("200 Ah", text)
         self.assertNotIn("Combined", text)
@@ -249,7 +252,7 @@ class MeasureTests(unittest.TestCase):
         self.assertIsNotNone(remaining["fraction_of_shared"])
         self.assertLess(float(remaining["fraction_of_shared"]), 1.0)
 
-    def test_a_cell_at_the_stop_zeros_husky_watt_hours(self) -> None:
+    def test_a_cell_at_the_suggested_stop_is_not_empty(self) -> None:
         samples = [
             _at(
                 0,
@@ -276,18 +279,113 @@ class MeasureTests(unittest.TestCase):
         count = report.husky_count
         self.assertIsNotNone(count)
         assert count is not None
-        self.assertTrue(count.at_stop)
-        self.assertGreater(count.soc or 0.0, 50.0)
+        self.assertFalse(count.at_empty)
+        self.assertGreater(count.soc or 0.0, 99.0)
+        self.assertIsNotNone(report.remaining)
+        assert report.remaining is not None
+        self.assertAlmostEqual(report.remaining.husky_wh or 0.0, 53.6 * NOMINAL_V, delta=5.0)
+        text = render(report)
+        self.assertNotIn("at or below", text)
+
+    def test_a_cell_at_3v_zeros_husky_watt_hours(self) -> None:
+        samples = [
+            _at(
+                0,
+                voltage_v=53.3,
+                current_a=0.0,
+                husky_soc=99.0,
+                solix_soc=100.0,
+                min_cell_v=3.34,
+                ac_in_w=30.0,
+                ac_out_w=30.0,
+            ),
+            _at(
+                1,
+                voltage_v=49.1,
+                current_a=-5.0,
+                husky_soc=24.0,
+                solix_soc=2.0,
+                min_cell_v=3.00,
+                ac_in_w=0.0,
+                ac_out_w=400.0,
+            ),
+        ]
+        report = analyze(samples, logged_load=False)
+        count = report.husky_count
+        self.assertIsNotNone(count)
+        assert count is not None
+        self.assertTrue(count.at_empty)
         self.assertIsNotNone(report.remaining)
         assert report.remaining is not None
         self.assertEqual(report.remaining.husky_wh, 0.0)
         text = render(report)
         self.assertIn("0 Wh", text)
         self.assertNotIn("at or below", text)
-        self.assertNotIn("3.175", text)
         notes = render(report, verbose=True)
         self.assertIn("at or below", notes)
-        self.assertIn("3.175", notes)
+        self.assertIn("3.00", notes)
+
+    def test_a_finished_discharge_sets_usable_capacity_for_the_next_full_point(self) -> None:
+        # 180 minutes at 10 A is 30 Ah, then a rest at 3.00 V, then back to full.
+        samples = [
+            _at(
+                0,
+                voltage_v=53.3,
+                current_a=0.0,
+                husky_soc=99.0,
+                solix_soc=100.0,
+                min_cell_v=3.34,
+                ac_in_w=30.0,
+                ac_out_w=30.0,
+            )
+        ]
+        for minute in range(1, 181):
+            samples.append(
+                _at(
+                    minute,
+                    voltage_v=51.2,
+                    current_a=-10.0,
+                    husky_soc=70.0,
+                    solix_soc=40.0,
+                    min_cell_v=3.20,
+                    ac_in_w=0.0,
+                    ac_out_w=500.0,
+                )
+            )
+        samples.append(
+            _at(
+                181,
+                voltage_v=49.1,
+                current_a=0.0,
+                husky_soc=24.0,
+                solix_soc=2.0,
+                min_cell_v=3.00,
+                ac_in_w=0.0,
+                ac_out_w=40.0,
+            )
+        )
+        samples.append(
+            _at(
+                400,
+                voltage_v=53.3,
+                current_a=0.0,
+                husky_soc=99.0,
+                solix_soc=100.0,
+                min_cell_v=3.33,
+                ac_in_w=30.0,
+                ac_out_w=30.0,
+            )
+        )
+        report = analyze(samples, logged_load=False)
+        count = report.husky_count
+        self.assertIsNotNone(count)
+        assert count is not None
+        self.assertAlmostEqual(count.usable_ah, 30.0, delta=0.05)
+        self.assertAlmostEqual(count.amp_hours_out or 0.0, 0.0, delta=0.01)
+        self.assertFalse(count.at_empty)
+        assert report.remaining is not None
+        self.assertAlmostEqual(report.remaining.husky_wh or 0.0, 30.0 * NOMINAL_V, delta=1.0)
+        self.assertAlmostEqual(report.remaining.husky_soc or 0.0, 100.0, delta=0.1)
 
 
 class LogTests(unittest.TestCase):
@@ -349,7 +447,7 @@ class LogTests(unittest.TestCase):
         self.assertIn("RUNTIME_3_REMAINING_H=", saved)
         text = buffer.getvalue()
         self.assertIn("420 W", text)
-        self.assertIn("8960 Wh", text)
+        self.assertIn("6584 Wh", text)
         self.assertIn("Shared runtime", text)
         self.assertIn("full", text)
         self.assertNotIn("logged", text)
@@ -479,3 +577,88 @@ class LogTests(unittest.TestCase):
         self.assertIn("charging         inactive", detailed.stdout)
         self.assertIn("AC output        output", detailed.stdout)
         self.assertIn("DC output        not_connected", detailed.stdout)
+
+    def test_status_reports_usable_remaining_at_full_and_at_empty(self) -> None:
+        script = Path(__file__).resolve().parents[1] / "status.sh"
+        high = self._status_for(
+            script,
+            [
+                {
+                    "time": "2026-10-25T12:00:00-04:00",
+                    "device": "husky",
+                    "voltage_v": 53.3,
+                    "current_a": 0.0,
+                    "soc_percent": 99.0,
+                    "min_cell_v": 3.34,
+                },
+                {
+                    "time": "2026-10-25T12:00:00-04:00",
+                    "device": "f3800",
+                    "soc_percent": 100,
+                    "ac_power_in_w": 30,
+                    "ac_power_out_w": 30,
+                },
+            ],
+        )
+        low = self._status_for(
+            script,
+            [
+                {
+                    "time": "2026-10-25T12:00:00-04:00",
+                    "device": "husky",
+                    "voltage_v": 53.3,
+                    "current_a": 0.0,
+                    "soc_percent": 99.0,
+                    "min_cell_v": 3.34,
+                },
+                {
+                    "time": "2026-10-25T12:00:00-04:00",
+                    "device": "f3800",
+                    "soc_percent": 100,
+                    "ac_power_in_w": 30,
+                    "ac_power_out_w": 30,
+                },
+                {
+                    "time": "2026-10-25T12:10:00-04:00",
+                    "device": "husky",
+                    "voltage_v": 49.1,
+                    "current_a": -5.0,
+                    "soc_percent": 24.0,
+                    "min_cell_v": 3.00,
+                },
+                {
+                    "time": "2026-10-25T12:10:00-04:00",
+                    "device": "f3800",
+                    "soc_percent": 2,
+                    "ac_power_out_w": 80,
+                },
+            ],
+        )
+        self.assertEqual(high.returncode, 0, high.stderr)
+        self.assertIn("usable           6584 Wh", high.stdout)
+        self.assertIn("remaining        100%   6584 Wh", high.stdout)
+        self.assertIn("59.3 h", high.stdout)
+        self.assertNotIn("8960", high.stdout)
+        self.assertEqual(low.returncode, 0, low.stderr)
+        self.assertIn("usable           6584 Wh", low.stdout)
+        self.assertIn("remaining        1.2%   77 Wh", low.stdout)
+        self.assertIn("0.7 h", low.stdout)
+        self.assertNotIn("59.3", low.stdout)
+        self.assertNotIn("8960", low.stdout)
+
+    def _status_for(self, script: Path, rows: list[dict[str, object]]) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "2026" / "10" / "25"
+            root.mkdir(parents=True)
+            path = root / "readings.ndjson"
+            path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+            estimate = Path(directory) / "capacity-estimate.env"
+            with redirect_stdout(io.StringIO()):
+                code = main(["--data-dir", directory, "--estimate-file", str(estimate)])
+            self.assertEqual(code, 0)
+            return subprocess.run(
+                [str(script), directory, str(estimate)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )

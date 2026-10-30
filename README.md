@@ -246,8 +246,8 @@ before the F3800 scan. That scan can still disturb the Husky session.
 contain a reading, including from the previous day when today has none yet.
 The default print leaves out the as-of times, zero-watt lines, and the
 usual inactive, not-connected, and AC-output states. `-v` prints those.
-When `capacity-estimate.env` is present, it also prints the shared remaining
-capacity and the remaining runtime from that file.
+When `capacity-estimate.env` is present, it also prints the usable capacity,
+the shared remaining capacity, and the remaining runtime from that file.
 
 # Capacity and runtime
 
@@ -258,32 +258,35 @@ reading. The Solix reports no pack voltage.
 
 The Husky 2 operating window is 48–57 V, with a suggested low cutoff of
 50.8 V and a BMS cutoff of 42–47 V. Its charge window is 55.6–57 V. The
-F3800 publishes 51.2 V and 75 Ah and does not publish a pack cutoff, so
-50.8 V is the shared stop on this pair. From about 3.20 V to 3.33 V per
-cell the voltage barely moves, so the lowest cell is checked against
-3.175 V and is not turned into a percentage. A drop while the Solix
-percentage holds still, just after charging, is surface charge leaving.
+F3800 publishes 51.2 V and 75 Ah and does not publish a pack cutoff. This
+bus treats a lowest cell of 3.00 V as empty. From about 3.20 V to 3.33 V
+per cell the voltage barely moves, so that voltage is not turned into a
+percentage. A drop while the Solix percentage holds still, just after
+charging, is surface charge leaving.
 
 Remaining Solix watt-hours follow the Solix percentage on the 75 Ah
 nameplate. Amp-hours inferred for the Solix are the bus minus the Husky,
 and they do not replace that nameplate. The Husky percentage is not
 calibrated. Remaining Husky watt-hours are amp-hours counted from the last
 rested full cell, when the Solix is near 100% and the lowest cell is at or
-above 3.30 V. A gap is not filled in.
+above 3.30 V. The usable Husky window is the amp-hours from that full cell
+to a rested 3.00 V lowest cell. The completed discharge measured 53.6 Ah.
+The 100 Ah nameplate stays in the `-v` notes. A gap is not filled in.
 
-The default report is a short table: total and remaining capacity for the
+The default report is a short table: usable and remaining capacity for the
 Solix, the Husky, and the shared pack, then example AC loads. Shared runtime
-has a full column for the 8960 Wh pack and a remaining column for the
+has a full column for the usable pack and a remaining column for the
 watt-hours still in the packs. Each figure is DC watt-hours times a 90%
 inverter, divided by the load. `-v` adds the log notes (gaps, bus voltage,
-the Husky percentage, and how the watt-hours were counted). With `-v`, the
-station's own hours-remaining figure is printed with the notes. That figure
-is the Solix pack.
+the Husky percentage, the nameplate, and how the watt-hours were counted).
+With `-v`, the station's own hours-remaining figure is printed with the
+notes. That figure is the Solix pack.
 
 When the report finishes it writes `capacity-estimate.env` in the current
-directory. The file records when the estimate was run, plus remaining
-percent and watt-hours and the remaining runtime at each example load.
-`status.sh` prints the shared remaining figure and those runtimes.
+directory. The file records when the estimate was run, the usable
+watt-hours, the remaining percent and watt-hours, and the remaining runtime
+at each example load. `status.sh` prints the usable total, the shared
+remaining figure, and those runtimes.
 
 ```bash
 .venv/bin/python -m capacity
